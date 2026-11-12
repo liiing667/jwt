@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -148,6 +149,9 @@ func (p *Parser) ParseUnverified(tokenString string, claims Claims) (token *Toke
 	if headerBytes, err = p.DecodeSegment(parts[0]); err != nil {
 		return token, parts, newError("could not base64 decode header", ErrTokenMalformed, err)
 	}
+	if err = checkDuplicateKeys(headerBytes); err != nil {
+		return token, parts, newError("header contains duplicate JSON keys", ErrTokenMalformed, err)
+	}
 	if err = json.Unmarshal(headerBytes, &token.Header); err != nil {
 		return token, parts, newError("could not JSON decode header", ErrTokenMalformed, err)
 	}
@@ -158,6 +162,10 @@ func (p *Parser) ParseUnverified(tokenString string, claims Claims) (token *Toke
 	claimBytes, err := p.DecodeSegment(parts[1])
 	if err != nil {
 		return token, parts, newError("could not base64 decode claim", ErrTokenMalformed, err)
+	}
+
+	if err = checkDuplicateKeys(claimBytes); err != nil {
+		return token, parts, newError("claim contains duplicate JSON keys", ErrTokenMalformed, err)
 	}
 
 	// If `useJSONNumber` is enabled then we must use *json.Decoder to decode
@@ -227,6 +235,70 @@ func splitToken(token string) ([]string, bool) {
 	parts[2] = signature
 
 	return parts, true
+}
+
+// checkDuplicateKeys scans a JSON document and returns an error if any object
+// contains a duplicate key, at any nesting level. Most JSON parsers, including
+// encoding/json, apply a "last wins" semantic for duplicate keys. If different
+// parties (e.g. a gateway and a backend service) disagree on that semantic, an
+// attacker could smuggle conflicting values for security-relevant fields such
+// as "alg", "kid", "iss" or "exp". Rejecting duplicates avoids this ambiguity.
+func checkDuplicateKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := checkDuplicateKeysValue(dec); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("unexpected data after top-level JSON value")
+	}
+	return nil
+}
+
+// checkDuplicateKeysValue consumes a single JSON value from dec, recursively
+// checking objects and arrays for duplicate keys.
+func checkDuplicateKeysValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	switch tok {
+	case json.Delim('{'):
+		keys := make(map[string]struct{})
+		for dec.More() {
+			t, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := t.(string)
+			if !ok {
+				return fmt.Errorf("expected object key, got %v", t)
+			}
+			if _, exists := keys[key]; exists {
+				return fmt.Errorf("duplicate key %q", key)
+			}
+			keys[key] = struct{}{}
+			if err := checkDuplicateKeysValue(dec); err != nil {
+				return err
+			}
+		}
+		// Consume the closing delimiter.
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+	case json.Delim('['):
+		for dec.More() {
+			if err := checkDuplicateKeysValue(dec); err != nil {
+				return err
+			}
+		}
+		// Consume the closing delimiter.
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // DecodeSegment decodes a JWT specific base64url encoding. This function will

@@ -3,6 +3,7 @@ package jwt_test
 import (
 	"crypto"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -855,6 +856,78 @@ func TestParser_ParseLineBreaks(t *testing.T) {
 			_, err := jwt.Parse(tt.token, defaultKeyFunc)
 			if !errors.Is(err, jwt.ErrTokenMalformed) {
 				t.Fatalf("expected %v, got %v", jwt.ErrTokenMalformed, err)
+			}
+		})
+	}
+}
+
+func TestParser_ParseDuplicateKeys(t *testing.T) {
+	encodeSegment := base64.RawURLEncoding.EncodeToString
+
+	// signRaw builds a properly signed RS256 token from raw JSON segments,
+	// which allows crafting duplicate keys that encoding/json would never emit.
+	signRaw := func(header, claims string) string {
+		signingString := encodeSegment([]byte(header)) + "." + encodeSegment([]byte(claims))
+		sig, err := jwt.SigningMethodRS256.Sign(signingString, jwtTestRSAPrivateKey)
+		if err != nil {
+			t.Fatalf("failed to sign token: %v", err)
+		}
+		return signingString + "." + encodeSegment(sig)
+	}
+
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{"duplicate alg in header", signRaw(`{"alg":"RS256","alg":"none","typ":"JWT"}`, `{"foo":"bar"}`)},
+		{"duplicate kid in header", signRaw(`{"alg":"RS256","kid":"a","kid":"b"}`, `{"foo":"bar"}`)},
+		{"duplicate iss in claims", signRaw(`{"alg":"RS256","typ":"JWT"}`, `{"iss":"a","iss":"b"}`)},
+		{"duplicate exp in claims", signRaw(`{"alg":"RS256","typ":"JWT"}`, `{"exp":1,"exp":9999999999}`)},
+		{"duplicate key in nested object", signRaw(`{"alg":"RS256","typ":"JWT"}`, `{"nested":{"a":1,"a":2}}`)},
+		{"duplicate key in array element", signRaw(`{"alg":"RS256","typ":"JWT"}`, `{"arr":[{"a":1,"a":2}]}`)},
+	}
+
+	parsers := map[string]*jwt.Parser{
+		"default":         jwt.NewParser(),
+		"json_number":     jwt.NewParser(jwt.WithJSONNumber()),
+		"valid_methods":   jwt.NewParser(jwt.WithValidMethods([]string{"RS256"})),
+		"skip_validation": jwt.NewParser(jwt.WithoutClaimsValidation()),
+	}
+
+	for _, tt := range tests {
+		for name, parser := range parsers {
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				_, err := parser.ParseWithClaims(tt.token, jwt.MapClaims{}, defaultKeyFunc)
+				if !errors.Is(err, jwt.ErrTokenMalformed) {
+					t.Fatalf("expected %v, got %v", jwt.ErrTokenMalformed, err)
+				}
+				if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+					t.Fatalf("duplicate keys must be rejected before signature verification, got %v", err)
+				}
+
+				_, err = parser.ParseWithClaims(tt.token, &jwt.RegisteredClaims{}, defaultKeyFunc)
+				if !errors.Is(err, jwt.ErrTokenMalformed) {
+					t.Fatalf("expected %v for custom claims, got %v", jwt.ErrTokenMalformed, err)
+				}
+
+				_, _, err = parser.ParseUnverified(tt.token, jwt.MapClaims{})
+				if !errors.Is(err, jwt.ErrTokenMalformed) {
+					t.Fatalf("expected %v for ParseUnverified, got %v", jwt.ErrTokenMalformed, err)
+				}
+			})
+		}
+	}
+
+	// A token without duplicate keys must still parse and validate.
+	valid := signRaw(`{"alg":"RS256","typ":"JWT"}`, `{"iss":"issuer","exp":9999999999}`)
+	for name, parser := range parsers {
+		t.Run("valid_token/"+name, func(t *testing.T) {
+			token, err := parser.ParseWithClaims(valid, jwt.MapClaims{}, defaultKeyFunc)
+			if err != nil {
+				t.Fatalf("expected valid token, got %v", err)
+			}
+			if !token.Valid {
+				t.Fatal("expected token to be valid")
 			}
 		})
 	}
