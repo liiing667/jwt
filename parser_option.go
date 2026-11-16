@@ -103,6 +103,26 @@ func WithAllAudiences(aud ...string) ParserOption {
 	}
 }
 
+// WithAudienceMatcher configures how the expected audiences supplied via
+// [WithAudience] or [WithAllAudiences] are compared against the values in the
+// token's `aud` claim.
+//
+// The default matcher is [ExactAudienceMatch], which requires byte-for-byte
+// equality. The shipped alternatives are [NormalizedAudienceMatch], which
+// treats same-origin URL variants (scheme/host case, default port and trailing
+// slash differences) as equal, [PrefixAudienceMatch] and
+// [NormalizedPrefixAudienceMatch]. A custom [AudienceMatcher] can implement
+// any application-specific semantics.
+//
+// This option only changes how values are compared; it does not relax the
+// requirement that an `aud` claim must be present once an audience is
+// expected.
+func WithAudienceMatcher(matcher AudienceMatcher) ParserOption {
+	return func(p *Parser) {
+		p.validator.audMatcher = matcher
+	}
+}
+
 // WithIssuer configures the validator to require the specified issuer in the
 // `iss` claim. Validation will fail if a different issuer is specified in the
 // token or the `iss` claim is missing.

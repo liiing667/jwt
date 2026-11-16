@@ -2,7 +2,6 @@ package jwt
 
 import (
 	"fmt"
-	"slices"
 	"time"
 )
 
@@ -61,6 +60,11 @@ type Validator struct {
 	// expectAllAud specifies whether all expected audiences must be present in
 	// the token. If false, only one of the expected audiences must be present.
 	expectAllAud bool
+
+	// audMatcher defines how a single expected audience is compared against a
+	// value in the token's `aud` claim. If nil, comparison falls back to
+	// [ExactAudienceMatch], preserving the default exact-match behavior.
+	audMatcher AudienceMatcher
 
 	// expectedIss contains the issuer this token expects. Supplying an empty
 	// string will disable iss checking.
@@ -229,6 +233,12 @@ func (v *Validator) verifyNotBefore(claims Claims, cmp time.Time, required bool)
 
 // verifyAudience compares the aud claim against cmp.
 //
+// Individual audience values are compared with the validator's
+// [AudienceMatcher], which defaults to [ExactAudienceMatch]. If expectAllAud
+// is false, validation succeeds as soon as one value in the token's `aud`
+// matches one of the expected values; otherwise every expected value must be
+// matched by at least one value in the token.
+//
 // If aud is not set or an empty list, it will succeed if the claim is not required,
 // otherwise ErrTokenRequiredClaimMissing will be returned.
 //
@@ -247,11 +257,18 @@ func (v *Validator) verifyAudience(claims Claims, cmp []string, expectAllAud boo
 		return errorIfRequired(required, "aud")
 	}
 
+	matcher := v.audMatcher
+	if matcher == nil {
+		matcher = ExactAudienceMatch
+	}
+
 	if !expectAllAud {
-		for _, a := range aud {
-			// If we only expect one match, we can stop early if we find a match
-			if slices.Contains(cmp, a) {
-				return nil
+		// If we only expect one match, we can stop early if we find a match.
+		for _, expected := range cmp {
+			for _, actual := range aud {
+				if matcher(expected, actual) {
+					return nil
+				}
 			}
 		}
 
@@ -260,8 +277,15 @@ func (v *Validator) verifyAudience(claims Claims, cmp []string, expectAllAud boo
 
 	// Note that we are looping cmp here to ensure that all expected audiences
 	// are present in the aud claim.
-	for _, a := range cmp {
-		if !slices.Contains(aud, a) {
+	for _, expected := range cmp {
+		matched := false
+		for _, actual := range aud {
+			if matcher(expected, actual) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return ErrTokenInvalidAudience
 		}
 	}
