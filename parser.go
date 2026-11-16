@@ -92,15 +92,42 @@ func (p *Parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyf
 	text := strings.Join(parts[0:2], ".")
 	switch have := got.(type) {
 	case VerificationKeySet:
-		if len(have.Keys) == 0 {
+		if len(have.Keys) == 0 && len(have.AttributedKeys) == 0 {
 			return token, newError("keyfunc returned empty verification key set", ErrTokenUnverifiable)
 		}
 
-		// Iterate through keys and verify signature, skipping the rest when a match is found.
-		// Return the last error if no match is found.
+		// Build the candidate set. Unattributed keys are always eligible,
+		// preserving the historical behavior. Attributed keys are only
+		// eligible when their "alg"/"kid" attribution matches the header.
+		alg, _ := token.Header[HeaderAlgorithm].(string)
+		kid, _ := token.Header[HeaderKeyID].(string)
+
+		candidates := make([]any, 0, len(have.Keys)+len(have.AttributedKeys))
 		for _, key := range have.Keys {
-			if err = token.Method.Verify(text, token.Signature, key); err == nil {
+			candidates = append(candidates, key)
+		}
+		for _, attributed := range have.AttributedKeys {
+			if attributed.matches(alg, kid) {
+				candidates = append(candidates, attributed.Key)
+			}
+		}
+
+		// If attribution was supplied but no key matches the header, report a
+		// distinct error so callers can tell misconfiguration apart from an
+		// invalid signature.
+		if len(candidates) == 0 {
+			return token, newError("no key in verification key set matches the token header", ErrTokenNoMatchingKey)
+		}
+
+		// Iterate through candidate keys and verify the signature, skipping
+		// the rest when a match is found. Return the last error if no match
+		// is found.
+		for _, key := range candidates {
+			if verifyErr := token.Method.Verify(text, token.Signature, key); verifyErr == nil {
+				err = nil
 				break
+			} else {
+				err = verifyErr
 			}
 		}
 	default:

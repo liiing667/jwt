@@ -13,6 +13,7 @@ var (
 	ErrTokenMalformed            = errors.New("token is malformed")
 	ErrTokenUnverifiable         = errors.New("token is unverifiable")
 	ErrTokenSignatureInvalid     = errors.New("token signature is invalid")
+	ErrTokenNoMatchingKey        = errors.New("token has no matching verification key")
 	ErrTokenRequiredClaimMissing = errors.New("token is missing required claim")
 	ErrTokenInvalidAudience      = errors.New("token has invalid audience")
 	ErrTokenExpired              = errors.New("token is expired")

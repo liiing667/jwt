@@ -22,7 +22,48 @@ type VerificationKey interface {
 
 // VerificationKeySet is a set of public or secret keys. It is used by the parser to verify a token.
 type VerificationKeySet struct {
+	// Keys contains verification keys without any header attribution. Every
+	// key in this slice is considered a candidate regardless of the token's
+	// "alg" and "kid" header parameters, preserving the historical behavior.
 	Keys []VerificationKey
+
+	// AttributedKeys contains verification keys that only apply to tokens
+	// matching their optional Algorithm and/or KeyID attribution. A token is
+	// only verified against keys whose attribution matches its header. If
+	// non-empty and none of the attributed keys matches the header, parsing
+	// fails with [ErrTokenNoMatchingKey] instead of a signature error.
+	AttributedKeys []AttributedKey
+}
+
+// AttributedKey associates a verification key with optional header
+// attribution. A zero value for Algorithm or KeyID means the corresponding
+// header parameter is not constrained. Both populated fields must match the
+// token's header for the key to be eligible for verification.
+type AttributedKey struct {
+	// Key is the public or secret key used to verify the signature.
+	Key VerificationKey
+
+	// Algorithm restricts this key to tokens whose "alg" header equals this
+	// value, e.g. "RS256". Empty means the algorithm is not constrained.
+	Algorithm string
+
+	// KeyID restricts this key to tokens whose "kid" header equals this
+	// value. Empty means the key ID is not constrained.
+	KeyID string
+}
+
+// matches reports whether the key's attribution is satisfied by the supplied
+// header parameters. Empty attribution fields act as wildcards.
+func (k AttributedKey) matches(alg, kid string) bool {
+	if k.Algorithm != "" && k.Algorithm != alg {
+		return false
+	}
+
+	if k.KeyID != "" && k.KeyID != kid {
+		return false
+	}
+
+	return true
 }
 
 // Registered JOSE header parameter names, for use as keys in [Token.Header]
